@@ -1,5 +1,6 @@
 ﻿using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Architecture;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 using System;
@@ -32,30 +33,100 @@ namespace CopyGroup
             //Document - база данных открытого документа. Через данный класс можно получать доступ к элементам, видам, создавать и удалять элементы.
             //UIDocument - это все что связанно с пользовательским интерфейсом в рамках документа. Дает возможность выбрать точки, объекты и т.д.
             //UIApplication -> из него получаем доступ к UIDocument -> а из него получаем доступ к Document
+            try
+            {
+                UIDocument uiDoc = commandData.Application.ActiveUIDocument;
+                Document doc = uiDoc.Document;
 
-            UIDocument uiDoc = commandData.Application.ActiveUIDocument;
-            Document doc = uiDoc.Document;
+                GroupPickFilter groupPickFilter = new GroupPickFilter(); //экземпляр класса 
 
-            Reference reference = uiDoc.Selection.PickObject(ObjectType.Element, "Выберите группу объектов"); //пользователь выбрал объект и получил ссылку на него
-            Element element = doc.GetElement(reference); //получили объект типа Element - родительский класс для всех объектов RevitAPI, они унаследованы от него
+                Reference reference = uiDoc.Selection.PickObject(ObjectType.Element,
+                    groupPickFilter, //интерфейс, который реализовывает два буловых метода AllowElement и AllowReference, которые возвращают тру, если 
+                                     //пользователь выбрал правильный элемент в модели. Передаем сюда экземпляр созданного нами ниже класса GroupPickFilter
+                    "Выберите группу объектов"); //пользователь выбрал объект и получил ссылку на него
 
-            //преобразовываем объект из базового типа Element в Group
+                Element element = doc.GetElement(reference); //преобразовали в Element - родительский класс для всех объектов RevitAPI, они унаследованы от него
 
-            //Group group = (Group)element; //это явное приведение, которое может дать исключение, если пользователь кликнул не по Group
-            Group group = element as Group; //предпочтительно так преобразовывать
+                //преобразовываем объект из базового типа Element в Group
 
-            XYZ point = uiDoc.Selection.PickPoint("Выберите точку"); //попросим пользователя выбрать точку
+                //Group group = (Group)element; //это явное приведение, которое может дать исключение, если пользователь кликнул не по Group
+                Group group = element as Group; //предпочтительно так преобразовывать
 
-            Transaction transaction = new Transaction(doc);
-            transaction.Start("Копирование группы объектов");
+                //вокруг любого элемента в ревите можно построить ограничивающую рамку BoundingBox, 
 
-            doc.Create.PlaceGroup(point, group.GroupType); //вообще все действия, которые касаются создания чего либо в документе ревит относятся к пространству имен Autodesk.Revit.Creation
+                XYZ groupCenter = GetElementCenter(element); //получили центр группы
+                Room room = GetRoomByPoint(doc, groupCenter); //выбираем комнату, где находится исходная группа объектов
+                XYZ roomCenter = GetElementCenter(room); //находим центр комнаты
+                XYZ offset = groupCenter - roomCenter; //определяем смещение центра группы относительно центра комнаты
 
-            transaction.Commit();
 
+                
+                XYZ point = uiDoc.Selection.PickPoint("Выберите точку"); //попросим пользователя выбрать точку вставки
+                Room newRoom = GetRoomByPoint(doc, point); //проверили принадлежит ли точка комнате
+                XYZ newRoomCenter = GetElementCenter(newRoom); //нашли центр этой комнаты
+                point = newRoomCenter + offset; 
+
+
+
+
+                Transaction transaction = new Transaction(doc);
+                transaction.Start("Копирование группы объектов");
+
+                doc.Create.PlaceGroup(point, group.GroupType); //все действия, касающиеся создания чего либо в ревите относятся к пространству имен Autodesk.Revit.Creation
+
+                transaction.Commit();
+            }
+            catch (Autodesk.Revit.Exceptions.OperationCanceledException) //если пользователь нажал esc во время выполнения програмы
+            {
+                return Result.Cancelled; //вернем отмену
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                return Result.Failed;
+
+            }
             return Result.Succeeded;
-
-
         }
+        public XYZ GetElementCenter (Element element)
+        {
+            BoundingBoxXYZ bounding = element.get_BoundingBox(null); //метод принимает любой элемент (группа, комната) и возвращает центр
+            return (bounding.Max + bounding.Min) / 2;
+            //Min - левый нижний дальний угол
+            //Max - правый верхний ближний угол
+        }
+
+        public Room GetRoomByPoint(Document doc, XYZ point)
+        {
+            FilteredElementCollector collector = new FilteredElementCollector(doc);
+            collector.OfCategory(BuiltInCategory.OST_Rooms);
+            foreach(Element e in collector)
+            {
+                Room room = e as Room;
+                if (room !=null)
+                {
+                    if (room.IsPointInRoom(point)) // IsPointInRoom этот метод возвращает тру или фолс если точка попадает в комнату
+                    {
+                        return room;
+                    }
+                }
+            }
+            return null;
+        }
+    }
+}
+public class GroupPickFilter : ISelectionFilter
+{
+    public bool AllowElement(Element elem)
+    {
+        if (elem.Category.Id.IntegerValue == (int)BuiltInCategory.OST_IOSModelGroups)
+            return true;
+        else
+            return false;
+    }
+
+    public bool AllowReference(Reference reference, XYZ position)
+    {
+        return false;
     }
 }
